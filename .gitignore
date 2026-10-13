@@ -1,0 +1,7 @@
+.tools/
+build/
+dist/
+*.user
+*.suo
+*.log
+.local/

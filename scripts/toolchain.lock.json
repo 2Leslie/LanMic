@@ -1,0 +1,30 @@
+{
+  "jdk": {
+    "version": "21.0.12.1+1",
+    "vendor": "Eclipse Adoptium Temurin",
+    "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_windows_hotspot_21.0.12.1_1.zip",
+    "sha256": "f9d6e191ab098c0d416e7d588a24420a8621cd2f4720dab2459b8b7b2d2d8b4e",
+    "metadata": "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse"
+  },
+  "android": {
+    "repository": "https://dl.google.com/android/repository/repository2-3.xml",
+    "packages": [
+      {
+        "id": "platforms;android-35",
+        "version": "35 revision 2",
+        "archive": "platform-35_r02.zip",
+        "sha1": "0bb560a90a7a2cbd0dd8348224d518b638fe7949",
+        "destination": "android-sdk/platforms/android-35",
+        "marker": "android.jar"
+      },
+      {
+        "id": "build-tools;35.0.0",
+        "version": "35.0.0",
+        "archive": "build-tools_r35_windows.zip",
+        "sha1": "af059bb67cf7786f45ee0db85e2d24985df1b4b6",
+        "destination": "android-sdk/build-tools/35.0.0",
+        "marker": "aapt2.exe"
+      }
+    ]
+  }
+}
