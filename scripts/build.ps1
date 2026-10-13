@@ -15,8 +15,19 @@ New-Item -ItemType Directory -Force -Path $buildRoot, $distRoot | Out-Null
 $builtFiles = @()
 
 function Invoke-Checked([string]$Program, [string[]]$Arguments) {
-    & $Program @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "Build command failed with exit code ${LASTEXITCODE}: $Program" }
+    # Android's native Windows tools do not consistently accept non-ASCII
+    # absolute paths. Run from the workspace and pass relative path arguments.
+    # PowerShell still launches the executable through its full Unicode path.
+    $prefix = $projectRoot.TrimEnd('\') + '\'
+    $nativeArguments = @($Arguments | ForEach-Object {
+        if ($_.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { '.\' + $_.Substring($prefix.Length) }
+        else { $_ }
+    })
+    Push-Location -LiteralPath $projectRoot
+    try {
+        & $Program @nativeArguments
+        if ($LASTEXITCODE -ne 0) { throw "Build command failed with exit code ${LASTEXITCODE}: $Program" }
+    } finally { Pop-Location }
 }
 
 function Reset-BuildDirectory([string]$Name) {
@@ -74,7 +85,8 @@ if ($Target -in @('All', 'Android')) {
     Invoke-Checked (Join-Path $buildTools 'aapt2.exe') @('link', '-o', $unsigned, '-I', $androidJar, '--manifest', $manifest, '--java', $generated, '--min-sdk-version', '26', '--target-sdk-version', '35', '--auto-add-overlay', $compiledResources)
     $sources = @(Get-ChildItem -LiteralPath $javaSource, $generated -Recurse -Filter '*.java' -File | Sort-Object FullName | ForEach-Object { $_.FullName })
     if ($sources.Count -eq 0) { throw 'No Java source files found.' }
-    Invoke-Checked $javac (@('-encoding', 'UTF-8', '-source', '8', '-target', '8', '-Xlint:-options', '-bootclasspath', $androidJar, '-classpath', $androidJar, '-d', $classes) + $sources)
+    $bootClasspath = $androidJar + ';' + (Join-Path $buildTools 'core-lambda-stubs.jar')
+    Invoke-Checked $javac (@('-J-Duser.language=en', '-J-Duser.country=US', '-encoding', 'UTF-8', '-source', '8', '-target', '8', '-Xlint:-options', '-bootclasspath', $bootClasspath, '-classpath', $androidJar, '-d', $classes) + $sources)
     $classJar = Join-Path $androidBuild 'classes.jar'
     Invoke-Checked $jar @('cf', $classJar, '-C', $classes, '.')
     Invoke-Checked $java @('-cp', (Join-Path $buildTools 'lib/d8.jar'), 'com.android.tools.r8.D8', '--release', '--min-api', '26', '--lib', $androidJar, '--output', $dex, $classJar)

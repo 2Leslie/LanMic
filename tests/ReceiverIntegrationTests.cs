@@ -173,6 +173,7 @@ internal static class ReceiverIntegrationTests
                     Thread.Sleep(100);
                     Until(delegate { return server.Snapshot.PendingConnections == 0; }, 6500, "unauthenticated idle socket times out");
                 }
+                string oldToken = server.PairingToken;
                 using (Client active = new Client(port, pin))
                 {
                     Check(active.Auth(auth, false) == "OK", "source accepted before stop");
@@ -184,11 +185,16 @@ internal static class ReceiverIntegrationTests
                 try { using (TcpClient probe = new TcpClient()) probe.Connect(IPAddress.Loopback, port); }
                 catch (SocketException) { stopped = true; }
                 Check(stopped, "stopped listener refuses connections");
-                string oldToken = server.PairingToken;
                 server.Start(port, -2);
                 Check(server.PairingToken != oldToken, "new listener session rotates pairing token");
                 using (Client restarted = new Client(port, server.CertificatePin))
                     Check(restarted.Auth(server.AuthCode, false) == "OK", "same server object restarts on same port");
+                for (int attempt = 0; attempt < 5; attempt++)
+                    using (Client wrong = new Client(port, server.CertificatePin))
+                        if (wrong.Auth(server.AuthCode == "000000" ? "999999" : "000000", false) != "NO")
+                            throw new Exception("Invalid authentication was accepted during rate-limit test");
+                using (Client coolingDown = new Client(port, server.CertificatePin))
+                    Check(coolingDown.Auth(server.AuthCode, false) == "NO", "five wrong codes trigger authentication cooldown");
                 server.Stop();
             }
             Console.WriteLine("RESULT " + passed + " integration assertions passed");

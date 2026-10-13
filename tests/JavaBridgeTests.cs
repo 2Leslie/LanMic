@@ -23,9 +23,16 @@ internal static class JavaBridgeTests
                 info.Arguments = "-cp \"" + args[1] + "\" JavaWireIntegration " + port + " " + server.PairingToken;
                 info.UseShellExecute = false;
                 info.CreateNoWindow = true;
+                info.RedirectStandardOutput = true;
+                info.RedirectStandardError = true;
                 using (Process child = Process.Start(info))
                 {
+                    child.OutputDataReceived += delegate(object sender, DataReceivedEventArgs data) { if (data.Data != null) Console.WriteLine(data.Data); };
+                    child.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs data) { if (data.Data != null) Console.Error.WriteLine(data.Data); };
+                    child.BeginOutputReadLine();
+                    child.BeginErrorReadLine();
                     if (!child.WaitForExit(25000)) { child.Kill(); throw new Exception("Java integration client exceeded 25 seconds"); }
+                    child.WaitForExit();
                     if (child.ExitCode != 0) throw new Exception("Java integration client failed");
                 }
                 if (server.Snapshot.ReceivedFrames != 27) throw new Exception("Expected 27 real Java frames, got " + server.Snapshot.ReceivedFrames);

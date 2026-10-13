@@ -39,12 +39,19 @@ namespace LanMic
             public RSA Key;
             public WaveOutPlayer Player;
             public readonly HashSet<TcpClient> Clients = new HashSet<TcpClient>();
+            public readonly Dictionary<string, FailureWindow> AuthFailures = new Dictionary<string, FailureWindow>();
             public TcpClient Active;
             public bool Running, CertificateDisposed;
             public string Token, Pin, Code, DeviceName = "", Error = "";
             public long Received, Rejected;
             public double Rms, Peak;
             public DateTime LastFrameUtc;
+        }
+
+        sealed class FailureWindow
+        {
+            public int Count;
+            public DateTime Expires;
         }
 
         public int Volume { get { lock (gate) return volume; } set { lock (gate) volume = Math.Max(0, Math.Min(200, value)); } }
@@ -87,7 +94,14 @@ namespace LanMic
                 request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, true));
                 var usages = new OidCollection(); usages.Add(new Oid("1.3.6.1.5.5.7.3.1"));
                 request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(usages, false));
-                session.Certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(2));
+                // Framework SChannel cannot acquire an ephemeral CNG private key directly.
+                // Import without PersistKeySet so the temporary user key is removed on disposal.
+                using (var ephemeral = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(2)))
+                {
+                    byte[] pfx = ephemeral.Export(X509ContentType.Pfx);
+                    try { session.Certificate = new X509Certificate2(pfx, (string)null, X509KeyStorageFlags.UserKeySet); }
+                    finally { Array.Clear(pfx, 0, pfx.Length); }
+                }
                 using (var sha = SHA256.Create()) session.Pin = BitConverter.ToString(sha.ComputeHash(session.Certificate.RawData)).Replace("-", "").Substring(0, 20);
                 // Rejection sampling keeps all six-digit codes equally likely.
                 using (var rng = RandomNumberGenerator.Create())
@@ -148,13 +162,43 @@ namespace LanMic
                 {
                     ssl.ReadTimeout = 5000; ssl.WriteTimeout = 5000;
                     ssl.AuthenticateAsServer(session.Certificate, false, SslProtocols.Tls12, false);
+                    string address = ((IPEndPoint)client.Client.RemoteEndPoint).Address.ToString();
                     byte[] hello = new byte[16];
                     ReadExact(ssl, hello, 16);
                     int nameLength = (hello[14] << 8) | hello[15];
                     bool codeMatches = true;
                     for (int i = 0; i < 6; i++) codeMatches &= hello[8 + i] == (byte)session.Code[i];
+                    bool coolingDown;
+                    lock (gate)
+                    {
+                        FailureWindow failure;
+                        coolingDown = session.AuthFailures.TryGetValue(address, out failure) && failure.Expires > DateTime.UtcNow && failure.Count >= 5;
+                    }
+                    if (coolingDown) { Reject(session, ssl, "NO"); return; }
                     if (Encoding.ASCII.GetString(hello, 0, 8) != "LMIC0001" || !codeMatches || nameLength < 1 || nameLength > 128)
-                    { Reject(session, ssl, "NO"); return; }
+                    {
+                        lock (gate)
+                        {
+                            FailureWindow failure;
+                            if (!session.AuthFailures.TryGetValue(address, out failure) || failure.Expires <= DateTime.UtcNow)
+                            {
+                                // Bound memory even if many different peers attempt authentication.
+                                if (session.AuthFailures.Count >= 256)
+                                {
+                                    var expired = new List<string>();
+                                    foreach (var item in session.AuthFailures) if (item.Value.Expires <= DateTime.UtcNow) expired.Add(item.Key);
+                                    foreach (string key in expired) session.AuthFailures.Remove(key);
+                                }
+                                if (session.AuthFailures.Count < 256)
+                                {
+                                    failure = new FailureWindow { Expires = DateTime.UtcNow.AddSeconds(30) };
+                                    session.AuthFailures[address] = failure;
+                                }
+                            }
+                            if (failure != null) failure.Count++;
+                        }
+                        Reject(session, ssl, "NO"); return;
+                    }
                     byte[] nameBytes = new byte[nameLength]; ReadExact(ssl, nameBytes, nameLength);
                     string name;
                     try { name = new UTF8Encoding(false, true).GetString(nameBytes); }

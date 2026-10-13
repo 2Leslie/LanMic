@@ -81,7 +81,7 @@ public final class MicConnection implements Closeable {
             InputStream in = tls.getInputStream();
             int first = in.read(), second = in.read();
             if (first == -1 || second == -1) throw new EOFException("电脑在配对期间关闭了连接");
-            if (first == 'N' && second == 'O') throw new RejectedException(Failure.AUTH, "配对码认证失败，请重新输入电脑当前显示的配对码");
+            if (first == 'N' && second == 'O') throw new RejectedException(Failure.AUTH, "配对码认证失败，请重新输入电脑当前配对码；连续输错时请等待 30 秒再试");
             if (first == 'B' && second == 'Z') throw new RejectedException(Failure.BUSY, "电脑已连接另一台手机，请先停止另一台手机的传输");
             if (first != 'O' || second != 'K') throw new RejectedException(Failure.PROTOCOL, "电脑返回了不支持的协议，请确认两端均为 LanMic v1");
             synchronized (lock) {

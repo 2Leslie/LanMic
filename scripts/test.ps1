@@ -27,7 +27,7 @@ $javaBin = Join-Path $projectRoot '.tools/jdk/bin'
 $classes = Join-Path $testRoot 'java'
 New-Item -ItemType Directory -Force -Path $classes | Out-Null
 Write-Host 'Compiling the production Android network client for cross-language testing...'
-Invoke-Checked (Join-Path $javaBin 'javac.exe') @('-encoding', 'UTF-8', '--release', '8', '-d', $classes, (Join-Path $projectRoot 'android/app/src/main/java/io/lanmic/app/MicConnection.java'), (Join-Path $projectRoot 'tests/JavaWireIntegration.java'))
+Invoke-Checked (Join-Path $javaBin 'javac.exe') @('-encoding', 'UTF-8', '--release', '8', '-Xlint:-options', '-d', $classes, (Join-Path $projectRoot 'android/app/src/main/java/io/lanmic/app/MicConnection.java'), (Join-Path $projectRoot 'tests/JavaWireIntegration.java'))
 $javaTest = Build-Test 'JavaBridgeTests'
 Invoke-Checked $javaTest @((Join-Path $javaBin 'java.exe'), $classes)
 

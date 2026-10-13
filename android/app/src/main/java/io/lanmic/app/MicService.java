@@ -144,7 +144,7 @@ public final class MicService extends Service {
                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP), pendingFlags);
         PendingIntent stop = PendingIntent.getService(this, 2, new Intent(this, MicService.class).setAction(STOP), pendingFlags);
         return new Notification.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_mic)
-                .setContentTitle("LanMic · " + text).setContentText("正在使用麦克风 · 点此返回控制台")
+                .setContentTitle("LanMic · " + text).setContentText("点此返回控制台 · 可随时停止传输")
                 .setContentIntent(open).setOngoing(true).setOnlyAlertOnce(true)
                 .setCategory(Notification.CATEGORY_SERVICE).setVisibility(Notification.VISIBILITY_PUBLIC)
                 .addAction(new Notification.Action.Builder(null, "停止传输", stop).build()).build();
@@ -320,14 +320,17 @@ public final class MicService extends Service {
             watchdogArmed = false;
             synchronized (resources) {
                 if (connection != null) { connection.close(); connection = null; }
-                if (recorder != null) {
-                    stopRecorder();
-                    recorder.release();
-                    recorder = null;
-                }
-                if (wakeLock != null) {
-                    if (wakeLock.isHeld()) wakeLock.release();
-                    wakeLock = null;
+                try {
+                    if (recorder != null) {
+                        stopRecorder();
+                        try { recorder.release(); } catch (RuntimeException ignored) { }
+                        recorder = null;
+                    }
+                } finally {
+                    if (wakeLock != null) {
+                        try { if (wakeLock.isHeld()) wakeLock.release(); } catch (RuntimeException ignored) { }
+                        wakeLock = null;
+                    }
                 }
             }
         }

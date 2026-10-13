@@ -2,6 +2,8 @@
 
 把安卓手机当作 Windows 电脑的 Wi-Fi 麦克风。以 WO Mic 的使用场景为参考，独立实现手机采集和电脑接收，不兼容 WO Mic 协议。
 
+[下载 Windows 程序和 Android APK](https://github.com/2Leslie/LanMic/releases) · [源码仓库](https://github.com/2Leslie/LanMic)
+
 第一版面向 **Android 8.0+ / Windows 10、11**：原生安卓 App、原生 Windows 窗口、局域网 TLS 加密传输、48 kHz / 16-bit / 单声道、静音、电平、输出设备选择。无需登录或云服务。手机与电脑需处于可互相访问的局域网。
 
 > **作为其他软件的麦克风使用，需要通用虚拟声卡。** 本项目当前没有自研虚拟麦克风驱动；仅把音频播放到扬声器，不等于在 Windows 创建了麦克风。
@@ -37,7 +39,7 @@
 | --- | --- |
 | 连接超时 | 先启动电脑监听；确认电脑 IPv4；手机和电脑同网段可互访；检查访客 Wi-Fi/AP 隔离或代理虚拟网卡。 |
 | Windows 防火墙提示 | 在信任的家庭/工作局域网允许 LanMic 的专用网络入站连接。无需开放公网端口，不需要路由器端口转发。 |
-| 配对码或证书不匹配 | 从电脑重新填写完整配对码；重启监听会换码。 |
+| 配对码或证书不匹配 | 从电脑重新填写完整配对码；重启监听会换码。连续输错 5 次会触发 30 秒限速，请稍后再试。 |
 | 提示已被占用 | 停止已连接的另一台手机，再连接。 |
 | 电脑有电平，目标软件无声 | LanMic 输出选 CABLE Input，目标软件输入选 CABLE Output；检查双方静音/音量以及 Windows 麦克风访问权限。 |
 | 锁屏后中断 | 查看前台服务通知是否仍存在；在手机系统中允许 LanMic 后台运行，关闭该 App 的电池优化（各品牌选项不同）。 |
@@ -56,6 +58,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build.ps1
 工具链仅下载和解压到本项目的 `.tools/`，不要求安装 Android Studio、Gradle 或全局 Java。Windows 使用系统附带的 C# 编译器；Android 使用固定版本的 JDK、Android API 35 和 Build Tools。下载地址、版本及校验值见 `scripts/toolchain.lock.json`。构建产物在 `dist/`，中间文件在 `build/`，本地 APK 签名密钥在 `.local/`。
 
 保留 `.local/` 的签名密钥才能用后续开发版 APK 覆盖安装；删除后重新生成的密钥会导致安卓要求先卸载旧版。密钥、下载工具和编译产物均已加入 `.gitignore`。
+
+验证与打包：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1
+```
+
+测试会使用本机回环网络验证真实 TLS 和 Java/C# 音频协议互通，并向一个可用播放设备发送短暂的**静音**以验证输出与资源释放。可用 `-SkipAudioOutput` 跳过设备测试；测试不打开任何麦克风。手机实录仍需真机验证。
 
 目录：
 
