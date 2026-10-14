@@ -20,7 +20,7 @@ internal static class JavaBridgeTests
             {
                 server.Start(port, -2);
                 ProcessStartInfo info = new ProcessStartInfo(args[0]);
-                info.Arguments = "-cp \"" + args[1] + "\" JavaWireIntegration " + port + " " + server.PairingToken;
+                info.Arguments = "-cp \"" + args[1] + "\" JavaWireIntegration " + port;
                 info.UseShellExecute = false;
                 info.CreateNoWindow = true;
                 info.RedirectStandardOutput = true;

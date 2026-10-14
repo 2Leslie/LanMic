@@ -35,7 +35,7 @@ public final class MainActivity extends Activity implements MicService.Observer 
     private static final int SECONDARY = Color.rgb(154, 173, 195);
     private static final int ACCENT = Color.rgb(45, 212, 191);
     private static final int REQUEST_PERMISSIONS = 21;
-    private EditText host, port, pairing;
+    private EditText host, port;
     private TextView statusTitle, statusDetail, statusBadge, levelText;
     private Button start, mute;
     private LevelMeter meter;
@@ -112,19 +112,6 @@ public final class MainActivity extends Activity implements MicService.Observer 
         addressRow.addView(portBox, portWidth);
         add(connectionCard, addressRow, 22);
 
-        add(connectionCard, text("电脑上显示的完整配对码", 12, SECONDARY), 18);
-        pairing = field("ABCD-EF01-2345-6789-ABCD-123456", InputType.TYPE_CLASS_TEXT
-                | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        pairing.setSingleLine(false);
-        pairing.setMinLines(2);
-        pairing.setMaxLines(3);
-        pairing.setTextSize(14);
-        pairing.setTypeface(Typeface.MONOSPACE);
-        pairing.setSaveEnabled(false);
-        pairing.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
-        add(connectionCard, pairing, 7);
-        add(connectionCard, text("配对码每次电脑开始监听时更新，不会保存。", 11, SECONDARY), 8);
-
         start = button("开始传输", ACCENT, BG);
         LinearLayout.LayoutParams startSize = new LinearLayout.LayoutParams(-1, dp(58));
         startSize.topMargin = dp(20);
@@ -145,8 +132,8 @@ public final class MainActivity extends Activity implements MicService.Observer 
         } });
 
         add(page, text("首次连接", 13, TEXT), 26);
-        add(page, text("1  电脑选择音频输出，点击「开始监听」。\n2  填入电脑显示的 IP、端口和完整配对码。\n3  点击「开始传输」，允许使用麦克风。", 12, SECONDARY), 9);
-        TextView privacy = text("声音通过 TLS 加密传输，不录音存盘。锁屏后可继续传输，可随时在通知中停止。静音时保持连接并发送静音音频。", 11, SECONDARY);
+        add(page, text("1  电脑选择音频输出，点击「开始监听」。\n2  填入电脑显示的 IP 和端口。\n3  点击「开始传输」，允许使用麦克风。", 12, SECONDARY), 9);
+        TextView privacy = text("声音通过局域网直接发送到电脑，不录音存盘。锁屏后可继续传输，可随时在通知中停止。静音时保持连接并发送静音音频。", 11, SECONDARY);
         add(page, privacy, 22);
         add(page, text("用于会议或游戏时，电脑需要配置虚拟音频设备；请参阅电脑端说明。", 11, SECONDARY), 10);
     }
@@ -185,8 +172,6 @@ public final class MainActivity extends Activity implements MicService.Observer 
         } catch (NumberFormatException error) {
             port.setError("端口范围是 1–65535"); port.requestFocus(); return false;
         }
-        try { MicConnection.normalizePairingToken(pairing.getText().toString()); }
-        catch (IllegalArgumentException error) { pairing.setError(error.getMessage()); pairing.requestFocus(); return false; }
         return true;
     }
 
@@ -197,14 +182,13 @@ public final class MainActivity extends Activity implements MicService.Observer 
         int portNumber = Integer.parseInt(port.getText().toString().trim());
         preferences.edit().putString("host", address).putInt("port", portNumber).apply();
         InputMethodManager keyboard = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-        keyboard.hideSoftInputFromWindow(pairing.getWindowToken(), 0);
+        keyboard.hideSoftInputFromWindow(host.getWindowToken(), 0);
         try {
             start.setEnabled(false);
             statusTitle.setText("正在启动");
             statusDetail.setText("正在启动麦克风前台服务");
             startForegroundService(new Intent(this, MicService.class).setAction(MicService.START)
-                    .putExtra("host", address).putExtra("port", portNumber)
-                    .putExtra("token", MicConnection.normalizePairingToken(pairing.getText().toString())));
+                    .putExtra("host", address).putExtra("port", portNumber));
         } catch (RuntimeException error) {
             start.setEnabled(true);
             statusTitle.setText("无法启动");
@@ -241,7 +225,7 @@ public final class MainActivity extends Activity implements MicService.Observer 
     @Override public void onMicState(MicService.State state) {
         statusTitle.setText(state.connected && state.muted ? "已静音，连接保持中" : state.title);
         statusDetail.setText(state.detail);
-        statusBadge.setText(state.connected ? "●  加密连接已建立" : state.running ? "●  正在连接" : "●  尚未连接");
+        statusBadge.setText(state.connected ? "●  已连接电脑" : state.running ? "●  正在连接" : "●  尚未连接");
         statusBadge.setTextColor(state.connected ? ACCENT : state.running ? Color.rgb(251, 191, 36) : SECONDARY);
         meter.setLevel(state.level);
         levelText.setText(state.muted ? "静音" : state.connected ? "48 kHz / 单声道" : "等待音频");
@@ -251,7 +235,7 @@ public final class MainActivity extends Activity implements MicService.Observer 
         mute.setEnabled(state.running);
         mute.setAlpha(state.running ? 1f : 0.45f);
         mute.setText(state.muted ? "取消静音" : "静音");
-        host.setEnabled(!state.running); port.setEnabled(!state.running); pairing.setEnabled(!state.running);
+        host.setEnabled(!state.running); port.setEnabled(!state.running);
     }
 
     private LinearLayout column() { LinearLayout value = new LinearLayout(this); value.setOrientation(LinearLayout.VERTICAL); return value; }

@@ -94,13 +94,11 @@ public final class MicService extends Service {
         if (current != null) return START_NOT_STICKY;
         String host = intent.getStringExtra("host");
         int port = intent.getIntExtra("port", 18765);
-        String token;
         try {
-            token = MicConnection.normalizePairingToken(intent.getStringExtra("token"));
             if (host == null || host.length() == 0 || port < 1 || port > 65535) throw new IllegalArgumentException("电脑地址或端口不正确");
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
                 throw new SecurityException("请先允许麦克风权限，再点击开始传输");
-            Notification notice = notification("正在安全连接电脑");
+            Notification notice = notification("正在连接电脑");
             if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, notice, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
             else startForeground(NOTIFICATION_ID, notice);
         } catch (RuntimeException error) {
@@ -110,9 +108,9 @@ public final class MicService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        Session session = new Session(host, port, token);
+        Session session = new Session(host, port);
         current = session;
-        publish(new State(true, false, false, "正在安全连接", "正在验证电脑证书，验证成功前不会采集声音", 0, 0));
+        publish(new State(true, false, false, "正在连接电脑", "正在等待电脑接受连接，接受后开始采集声音", 0, 0));
         session.worker.start();
         return START_NOT_STICKY; // Never restart microphone capture without another explicit user start.
     }
@@ -174,7 +172,6 @@ public final class MicService extends Service {
         if (error instanceof SocketTimeoutException) return "连接超时；检查同一 Wi-Fi、电脑地址以及电脑防火墙是否允许 LanMic";
         if (error instanceof ConnectException) return "无法连接电脑；请确认电脑接收端已开始监听，IP 和端口正确";
         if (error instanceof UnknownHostException) return "找不到电脑地址，请输入电脑显示的 IPv4 地址";
-        if (error instanceof javax.net.ssl.SSLException) return "安全连接失败；请确认两端版本一致，并重新获取电脑配对码";
         return "Wi-Fi 连接已中断或电脑停止接收；请检查网络并重新开始";
     }
 
@@ -183,7 +180,7 @@ public final class MicService extends Service {
     }
 
     private final class Session implements Runnable {
-        final String host, token;
+        final String host;
         final int port;
         final Thread worker;
         final Object resources = new Object();
@@ -193,8 +190,8 @@ public final class MicService extends Service {
         private AudioRecord recorder;
         private PowerManager.WakeLock wakeLock;
 
-        Session(String host, int port, String token) {
-            this.host = host; this.port = port; this.token = token;
+        Session(String host, int port) {
+            this.host = host; this.port = port;
             worker = new Thread(this, "LanMic-audio");
         }
 
@@ -227,20 +224,20 @@ public final class MicService extends Service {
                 boolean retry = false;
                 try {
                     networkTimedOut = false;
-                    update(this, attempt == 0 ? "正在安全连接" : "正在重新连接", "正在验证电脑证书与配对码", false, 0);
+                    update(this, attempt == 0 ? "正在连接电脑" : "正在重新连接", "正在等待电脑接受连接", false, 0);
                     MicConnection candidate = new MicConnection();
                     synchronized (resources) {
                         if (cancelled) { candidate.close(); break; }
                         connection = candidate;
                     }
-                    candidate.connect(host, port, token, Build.MANUFACTURER + " " + Build.MODEL);
+                    candidate.connect(host, port, Build.MANUFACTURER + " " + Build.MODEL);
                     if (cancelled) break;
                     lastNetworkProgress = SystemClock.elapsedRealtime();
                     watchdogArmed = true;
                     capture(candidate);
                     if (!cancelled) throw new IOException("Audio stream ended");
                 } catch (MicConnection.RejectedException rejected) {
-                    finalError = rejected.getMessage(); // Pin, authentication, busy and protocol errors never retry.
+                    finalError = rejected.getMessage(); // Busy and protocol errors never retry.
                 } catch (CaptureFailure failure) {
                     finalError = failure.getMessage();
                 } catch (SecurityException permission) {
@@ -280,7 +277,7 @@ public final class MicService extends Service {
             byte[] pcm = new byte[MicConnection.FRAME_BYTES];
             long lastUi = 0;
             int emptyReads = 0;
-            update(this, "正在传输", "TLS 已验证 · 48 kHz · 单声道 PCM16", true, 0);
+            update(this, "正在传输", "48 kHz · 单声道 PCM16", true, 0);
             while (!cancelled) {
                 int offset = 0;
                 while (offset < samples.length && !cancelled) {
@@ -310,7 +307,7 @@ public final class MicService extends Service {
                     double rms = Math.sqrt(squares / samples.length) / 32768.0;
                     double db = rms > 0 ? 20.0 * Math.log10(rms) : -60;
                     int level = (int) Math.max(0, Math.min(100, (db + 60) * 100 / 60));
-                    update(this, "正在传输", "TLS 已验证 · 已发送 " + (sentFrames / 50) + " 秒音频", true, level);
+                    update(this, "正在传输", "已发送 " + (sentFrames / 50) + " 秒音频", true, level);
                     lastUi = now;
                 }
             }

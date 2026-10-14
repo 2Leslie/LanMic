@@ -2,11 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
-using System.Net.Security;
 using System.Net.Sockets;
-using System.Security.Authentication;
-using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 
@@ -35,30 +31,18 @@ namespace LanMic
         sealed class Session
         {
             public TcpListener Listener;
-            public X509Certificate2 Certificate;
-            public RSA Key;
             public WaveOutPlayer Player;
             public readonly HashSet<TcpClient> Clients = new HashSet<TcpClient>();
-            public readonly Dictionary<string, FailureWindow> AuthFailures = new Dictionary<string, FailureWindow>();
             public TcpClient Active;
-            public bool Running, CertificateDisposed;
-            public string Token, Pin, Code, DeviceName = "", Error = "";
+            public bool Running;
+            public string DeviceName = "", Error = "";
             public long Received, Rejected;
             public double Rms, Peak;
             public DateTime LastFrameUtc;
         }
 
-        sealed class FailureWindow
-        {
-            public int Count;
-            public DateTime Expires;
-        }
-
         public int Volume { get { lock (gate) return volume; } set { lock (gate) volume = Math.Max(0, Math.Min(200, value)); } }
         public bool Muted { get { lock (gate) return muted; } set { lock (gate) muted = value; } }
-        public string PairingToken { get { lock (gate) return current == null ? "" : current.Token; } }
-        public string CertificatePin { get { lock (gate) return current == null ? "" : current.Pin; } }
-        public string AuthCode { get { lock (gate) return current == null ? "" : current.Code; } }
 
         public ReceiverSnapshot Snapshot
         {
@@ -88,30 +72,6 @@ namespace LanMic
             try
             {
                 if (outputDeviceId != LevelOnlyDevice) session.Player = new WaveOutPlayer(outputDeviceId);
-                session.Key = new RSACng(2048);
-                var request = new CertificateRequest("CN=LanMic local receiver", session.Key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-                request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
-                request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, true));
-                var usages = new OidCollection(); usages.Add(new Oid("1.3.6.1.5.5.7.3.1"));
-                request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(usages, false));
-                // Framework SChannel cannot acquire an ephemeral CNG private key directly.
-                // Import without PersistKeySet so the temporary user key is removed on disposal.
-                using (var ephemeral = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(2)))
-                {
-                    byte[] pfx = ephemeral.Export(X509ContentType.Pfx);
-                    try { session.Certificate = new X509Certificate2(pfx, (string)null, X509KeyStorageFlags.UserKeySet); }
-                    finally { Array.Clear(pfx, 0, pfx.Length); }
-                }
-                using (var sha = SHA256.Create()) session.Pin = BitConverter.ToString(sha.ComputeHash(session.Certificate.RawData)).Replace("-", "").Substring(0, 20);
-                // Rejection sampling keeps all six-digit codes equally likely.
-                using (var rng = RandomNumberGenerator.Create())
-                {
-                    byte[] random = new byte[4]; uint value;
-                    do { rng.GetBytes(random); value = BitConverter.ToUInt32(random, 0); } while (value >= 4294000000U);
-                    session.Code = (value % 1000000U).ToString("D6");
-                }
-                session.Token = session.Pin.Substring(0, 4) + "-" + session.Pin.Substring(4, 4) + "-" + session.Pin.Substring(8, 4) + "-" +
-                    session.Pin.Substring(12, 4) + "-" + session.Pin.Substring(16, 4) + "-" + session.Code;
                 session.Listener = new TcpListener(IPAddress.Any, port);
                 session.Listener.Server.ExclusiveAddressUse = true;
                 session.Listener.Start(12);
@@ -124,8 +84,6 @@ namespace LanMic
             {
                 if (session.Listener != null) session.Listener.Stop();
                 if (session.Player != null) session.Player.Dispose();
-                if (session.Certificate != null) session.Certificate.Dispose();
-                if (session.Key != null) session.Key.Dispose();
                 throw;
             }
         }
@@ -151,78 +109,45 @@ namespace LanMic
 
         void HandleClient(Session session, TcpClient client)
         {
-            bool authenticated = false;
+            bool connected = false;
             Timer deadline = null;
             try
             {
                 client.NoDelay = true;
                 client.ReceiveTimeout = 5000; client.SendTimeout = 5000;
                 deadline = new Timer(delegate { try { client.Close(); } catch { } }, null, 5000, Timeout.Infinite);
-                using (var ssl = new SslStream(client.GetStream(), false))
+                using (NetworkStream stream = client.GetStream())
                 {
-                    ssl.ReadTimeout = 5000; ssl.WriteTimeout = 5000;
-                    ssl.AuthenticateAsServer(session.Certificate, false, SslProtocols.Tls12, false);
-                    string address = ((IPEndPoint)client.Client.RemoteEndPoint).Address.ToString();
-                    byte[] hello = new byte[16];
-                    ReadExact(ssl, hello, 16);
-                    int nameLength = (hello[14] << 8) | hello[15];
-                    bool codeMatches = true;
-                    for (int i = 0; i < 6; i++) codeMatches &= hello[8 + i] == (byte)session.Code[i];
-                    bool coolingDown;
-                    lock (gate)
-                    {
-                        FailureWindow failure;
-                        coolingDown = session.AuthFailures.TryGetValue(address, out failure) && failure.Expires > DateTime.UtcNow && failure.Count >= 5;
-                    }
-                    if (coolingDown) { Reject(session, ssl, "NO"); return; }
-                    if (Encoding.ASCII.GetString(hello, 0, 8) != "LMIC0001" || !codeMatches || nameLength < 1 || nameLength > 128)
-                    {
-                        lock (gate)
-                        {
-                            FailureWindow failure;
-                            if (!session.AuthFailures.TryGetValue(address, out failure) || failure.Expires <= DateTime.UtcNow)
-                            {
-                                // Bound memory even if many different peers attempt authentication.
-                                if (session.AuthFailures.Count >= 256)
-                                {
-                                    var expired = new List<string>();
-                                    foreach (var item in session.AuthFailures) if (item.Value.Expires <= DateTime.UtcNow) expired.Add(item.Key);
-                                    foreach (string key in expired) session.AuthFailures.Remove(key);
-                                }
-                                if (session.AuthFailures.Count < 256)
-                                {
-                                    failure = new FailureWindow { Expires = DateTime.UtcNow.AddSeconds(30) };
-                                    session.AuthFailures[address] = failure;
-                                }
-                            }
-                            if (failure != null) failure.Count++;
-                        }
-                        Reject(session, ssl, "NO"); return;
-                    }
-                    byte[] nameBytes = new byte[nameLength]; ReadExact(ssl, nameBytes, nameLength);
+                    stream.ReadTimeout = 5000; stream.WriteTimeout = 5000;
+                    byte[] hello = new byte[10];
+                    ReadExact(stream, hello, hello.Length);
+                    int nameLength = (hello[8] << 8) | hello[9];
+                    if (Encoding.ASCII.GetString(hello, 0, 8) != "LMIC0002" || nameLength < 1 || nameLength > 128)
+                    { Reject(session, stream, "NO"); return; }
+                    byte[] nameBytes = new byte[nameLength]; ReadExact(stream, nameBytes, nameLength);
                     string name;
                     try { name = new UTF8Encoding(false, true).GetString(nameBytes); }
-                    catch (DecoderFallbackException) { Reject(session, ssl, "NO"); return; }
-                    if (String.IsNullOrWhiteSpace(name)) { Reject(session, ssl, "NO"); return; }
-                    foreach (char c in name) if (Char.IsControl(c)) { Reject(session, ssl, "NO"); return; }
+                    catch (DecoderFallbackException) { Reject(session, stream, "NO"); return; }
+                    if (String.IsNullOrWhiteSpace(name)) { Reject(session, stream, "NO"); return; }
+                    foreach (char c in name) if (Char.IsControl(c)) { Reject(session, stream, "NO"); return; }
                     lock (gate)
                     {
                         if (!session.Running) return;
                         if (session.Active == null)
                         {
                             session.Active = client; session.DeviceName = name; session.Error = "";
-                            authenticated = true;
+                            connected = true;
                         }
                     }
-                    if (!authenticated) { Reject(session, ssl, "BZ"); return; }
-                    ssl.Write(new byte[] { 79, 75 }, 0, 2); ssl.Flush();
+                    if (!connected) { Reject(session, stream, "BZ"); return; }
+                    stream.Write(new byte[] { 79, 75 }, 0, 2); stream.Flush();
                     deadline.Dispose(); deadline = null;
                     byte[] size = new byte[2], frame = new byte[1920];
                     while (session.Running)
                     {
-                        ReadExact(ssl, size, 2);
+                        ReadExact(stream, size, 2);
                         if (((size[0] << 8) | size[1]) != frame.Length) throw new InvalidDataException("手机发送了不支持的音频帧长度。");
-                        ReadExact(ssl, frame, frame.Length);
+                        ReadExact(stream, frame, frame.Length);
                         double sum = 0, peak = 0;
                         for (int i = 0; i < frame.Length; i += 2)
                         {
@@ -256,9 +181,9 @@ namespace LanMic
             {
                 lock (gate)
                 {
-                    if (session.Running && authenticated && !(ex is EndOfStreamException))
+                    if (session.Running && connected && !(ex is EndOfStreamException))
                         session.Error = ex is IOException || ex is SocketException ? "连接中断或超过 5 秒未收到音频。" : ex.Message;
-                    if (!authenticated) session.Rejected++;
+                    if (!connected) session.Rejected++;
                 }
             }
             finally
@@ -275,15 +200,14 @@ namespace LanMic
                         session.Active = null; session.DeviceName = ""; session.Rms = session.Peak = 0;
                     }
                     session.Clients.Remove(client);
-                    ReleaseCertificate(session);
                 }
             }
         }
 
-        void Reject(Session session, SslStream ssl, string code)
+        void Reject(Session session, Stream stream, string code)
         {
             lock (gate) session.Rejected++;
-            byte[] response = Encoding.ASCII.GetBytes(code); ssl.Write(response, 0, response.Length); ssl.Flush();
+            byte[] response = Encoding.ASCII.GetBytes(code); stream.Write(response, 0, response.Length); stream.Flush();
         }
 
         static void ReadExact(Stream stream, byte[] buffer, int count)
@@ -297,15 +221,6 @@ namespace LanMic
             }
         }
 
-        void ReleaseCertificate(Session session)
-        {
-            if (!session.Running && session.Clients.Count == 0 && !session.CertificateDisposed)
-            {
-                session.CertificateDisposed = true;
-                session.Certificate.Dispose(); session.Key.Dispose();
-            }
-        }
-
         public void Stop()
         {
             Session session;
@@ -315,7 +230,6 @@ namespace LanMic
                 session.Running = false; current = null;
                 session.Listener.Stop();
                 foreach (TcpClient client in session.Clients) client.Close();
-                ReleaseCertificate(session);
             }
             if (session.Player != null) session.Player.Dispose();
         }

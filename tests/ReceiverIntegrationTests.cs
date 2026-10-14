@@ -1,16 +1,12 @@
 using System;
 using System.IO;
 using System.Net;
-using System.Net.Security;
 using System.Net.Sockets;
-using System.Security.Authentication;
-using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using LanMic;
 
-// Real loopback TLS, no physical microphone or audio device required.
+// Real loopback TCP v2; no password, TLS, microphone, or playback device.
 internal static class ReceiverIntegrationTests
 {
     private static int passed;
@@ -30,40 +26,35 @@ internal static class ReceiverIntegrationTests
         }
         Check(false, message);
     }
-    private static string Pin(X509Certificate certificate)
-    {
-        using (SHA256 hash = SHA256.Create())
-            return BitConverter.ToString(hash.ComputeHash(certificate.GetRawCertData())).Replace("-", "").Substring(0, 20);
-    }
     private sealed class Client : IDisposable
     {
         public readonly TcpClient Tcp;
-        public readonly SslStream Stream;
-        public Client(int port, string expectedPin)
+        public readonly NetworkStream Stream;
+        public Client(int port)
         {
             Tcp = new TcpClient();
             Tcp.NoDelay = true;
             Tcp.Connect(IPAddress.Loopback, port);
             Tcp.ReceiveTimeout = 3000;
             Tcp.SendTimeout = 3000;
-            Stream = new SslStream(Tcp.GetStream(), false, delegate(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errors)
-            {
-                return cert != null && Pin(cert) == expectedPin;
-            });
+            Stream = Tcp.GetStream();
             Stream.ReadTimeout = 3000;
             Stream.WriteTimeout = 3000;
-            try { Stream.AuthenticateAsClient("LanMic", null, SslProtocols.Tls12, false); }
-            catch { Stream.Dispose(); Tcp.Close(); throw; }
         }
-        public string Auth(string auth, bool fragmented)
+        public string Hello(bool fragmented)
         {
             byte[] name = Encoding.UTF8.GetBytes("Integration 手机");
-            byte[] header = Encoding.ASCII.GetBytes("LMIC0001" + auth);
-            byte[] bytes = new byte[header.Length + 2 + name.Length];
-            Buffer.BlockCopy(header, 0, bytes, 0, header.Length);
-            bytes[14] = (byte)(name.Length >> 8);
-            bytes[15] = (byte)name.Length;
-            Buffer.BlockCopy(name, 0, bytes, 16, name.Length);
+            return Request("LMIC0002", name, name.Length, fragmented);
+        }
+        public string Request(string magic, byte[] name, int declaredLength, bool fragmented)
+        {
+            byte[] header = Encoding.ASCII.GetBytes(magic);
+            if (header.Length != 8) throw new ArgumentException("Magic must be 8 ASCII bytes");
+            byte[] bytes = new byte[10 + name.Length];
+            Buffer.BlockCopy(header, 0, bytes, 0, 8);
+            bytes[8] = (byte)(declaredLength >> 8);
+            bytes[9] = (byte)declaredLength;
+            Buffer.BlockCopy(name, 0, bytes, 10, name.Length);
             if (fragmented)
             {
                 foreach (byte value in bytes) { Stream.WriteByte(value); Stream.Flush(); }
@@ -118,31 +109,38 @@ internal static class ReceiverIntegrationTests
             reservation.Stop();
             using (ReceiverServer server = new ReceiverServer())
             {
-                server.Start(port, -2);
-                string pin = server.CertificatePin;
-                string auth = server.AuthCode;
-                Check(pin.Length == 20 && auth.Length == 6, "pairing components use expected lengths");
-                bool wrongPinRejected = false;
-                try { using (Client badPin = new Client(port, new string('0', 20))) { } }
-                catch (AuthenticationException) { wrongPinRejected = true; }
-                Check(wrongPinRejected, "client rejects wrong pinned certificate");
-                using (Client wrong = new Client(port, pin))
-                    Check(wrong.Auth(auth == "000000" ? "999999" : "000000", false) == "NO", "wrong authentication is rejected");
+                server.Start(port, ReceiverServer.LevelOnlyDevice);
+                byte[] name = Encoding.UTF8.GetBytes("Raw TCP client");
+                using (Client raw = new Client(port))
+                    Check(raw.Request("LMIC0002", name, name.Length, false) == "OK", "raw TCP socket connects with only magic and device name; no password is required");
+                Until(delegate { return server.Snapshot.ActiveClients == 0; }, 2000, "raw TCP source disconnects cleanly");
+                using (Client wrongMagic = new Client(port))
+                    Check(wrongMagic.Request("BAD00000", name, name.Length, false) == "NO", "wrong protocol magic is rejected");
+                using (Client legacy = new Client(port))
+                    Check(legacy.Request("LMIC0001", name, name.Length, false) == "NO", "legacy LMIC0001 magic is rejected");
+                using (Client emptyName = new Client(port))
+                    Check(emptyName.Request("LMIC0002", new byte[0], 0, false) == "NO", "empty device name length is rejected");
+                using (Client oversizedName = new Client(port))
+                    Check(oversizedName.Request("LMIC0002", new byte[0], 129, false) == "NO", "oversized device name length is rejected before reading payload");
+                using (Client invalidUtf8 = new Client(port))
+                    Check(invalidUtf8.Request("LMIC0002", new byte[] { 0xC3, 0x28 }, 2, false) == "NO", "malformed UTF-8 device name is rejected");
+                using (Client whitespaceName = new Client(port))
+                    Check(whitespaceName.Request("LMIC0002", new byte[] { 32, 32 }, 2, false) == "NO", "blank device name is rejected");
                 using (TcpClient idle = new TcpClient())
                 {
                     idle.Connect(IPAddress.Loopback, port);
-                    using (Client good = new Client(port, pin))
+                    using (Client good = new Client(port))
                     {
-                        Check(good.Auth(auth, true) == "OK", "fragmented handshake succeeds while another socket is idle");
+                        Check(good.Hello(true) == "OK", "fragmented TCP handshake succeeds while another socket is idle");
                         byte[] pcm = Tone();
                         long before = server.Snapshot.ReceivedFrames;
                         good.Frame(pcm, true);
                         good.Frame(pcm, false);
                         Until(delegate { return server.Snapshot.ReceivedFrames >= before + 2; }, 2000, "fragmented PCM is reassembled and received");
-                        Check(server.Snapshot.Peak > 0.45 && server.Snapshot.Rms > 0.3, "meter reflects actual 1 kHz PCM samples");
+                        Check(Math.Abs(server.Snapshot.Peak - 0.5) < 0.002 && Math.Abs(server.Snapshot.Rms - Math.Sqrt(0.125)) < 0.002, "meter matches actual 1 kHz PCM peak and RMS");
                         Check(server.Snapshot.OutputFrames == 0, "meter-only mode does not claim physical audio output");
-                        using (Client busy = new Client(port, pin))
-                            Check(busy.Auth(auth, false) == "BZ", "second authenticated sender receives busy");
+                        using (Client busy = new Client(port))
+                            Check(busy.Hello(false) == "BZ", "second sender receives busy");
                         before = server.Snapshot.ReceivedFrames;
                         good.Frame(new byte[1920], false);
                         Until(delegate { return server.Snapshot.ReceivedFrames > before; }, 2000, "busy rejection does not interrupt active sender");
@@ -150,33 +148,28 @@ internal static class ReceiverIntegrationTests
                     }
                 }
                 Until(delegate { return server.Snapshot.ActiveClients == 0; }, 2000, "disconnect releases active source");
-                using (Client malformed = new Client(port, pin))
+                using (Client malformed = new Client(port))
                 {
-                    Check(malformed.Auth(auth, false) == "OK", "new sender can reconnect");
+                    Check(malformed.Hello(false) == "OK", "new sender can reconnect");
                     malformed.Stream.Write(new byte[] { 255, 255 }, 0, 2);
                     malformed.Stream.Flush();
                     Until(delegate { return server.Snapshot.ActiveClients == 0; }, 2000, "invalid PCM length terminates source before allocation");
                 }
-                using (Client malformedName = new Client(port, pin))
-                {
-                    byte[] prefix = Encoding.ASCII.GetBytes("LMIC0001" + auth);
-                    malformedName.Stream.Write(prefix, 0, prefix.Length);
-                    malformedName.Stream.Write(new byte[] { 255, 255 }, 0, 2);
-                    malformedName.Stream.Flush();
-                    byte[] reply = new byte[2];
-                    ReadFully(malformedName.Stream, reply);
-                    Check(Encoding.ASCII.GetString(reply) == "NO", "oversized device name is rejected");
-                }
+                Until(delegate { return server.Snapshot.PendingConnections == 0; }, 2000, "completed invalid requests release all pending slots");
                 using (TcpClient idle = new TcpClient())
                 {
                     idle.Connect(IPAddress.Loopback, port);
-                    Thread.Sleep(100);
-                    Until(delegate { return server.Snapshot.PendingConnections == 0; }, 6500, "unauthenticated idle socket times out");
+                    Until(delegate { return server.Snapshot.PendingConnections == 1; }, 2000, "idle TCP socket is tracked while waiting for protocol header");
+                    Until(delegate { return server.Snapshot.PendingConnections == 0; }, 6500, "idle TCP socket times out");
                 }
-                string oldToken = server.PairingToken;
-                using (Client active = new Client(port, pin))
+                using (Client idleSource = new Client(port))
                 {
-                    Check(active.Auth(auth, false) == "OK", "source accepted before stop");
+                    Check(idleSource.Hello(false) == "OK", "source accepted before audio timeout test");
+                    Until(delegate { return server.Snapshot.ActiveClients == 0; }, 6500, "connected sender that sends no PCM times out");
+                }
+                using (Client active = new Client(port))
+                {
+                    Check(active.Hello(false) == "OK", "source accepted before stop");
                     active.Frame(Tone(), false);
                     server.Stop();
                     Check(server.Snapshot.ActiveClients == 0, "stop closes active source");
@@ -185,16 +178,9 @@ internal static class ReceiverIntegrationTests
                 try { using (TcpClient probe = new TcpClient()) probe.Connect(IPAddress.Loopback, port); }
                 catch (SocketException) { stopped = true; }
                 Check(stopped, "stopped listener refuses connections");
-                server.Start(port, -2);
-                Check(server.PairingToken != oldToken, "new listener session rotates pairing token");
-                using (Client restarted = new Client(port, server.CertificatePin))
-                    Check(restarted.Auth(server.AuthCode, false) == "OK", "same server object restarts on same port");
-                for (int attempt = 0; attempt < 5; attempt++)
-                    using (Client wrong = new Client(port, server.CertificatePin))
-                        if (wrong.Auth(server.AuthCode == "000000" ? "999999" : "000000", false) != "NO")
-                            throw new Exception("Invalid authentication was accepted during rate-limit test");
-                using (Client coolingDown = new Client(port, server.CertificatePin))
-                    Check(coolingDown.Auth(server.AuthCode, false) == "NO", "five wrong codes trigger authentication cooldown");
+                server.Start(port, ReceiverServer.LevelOnlyDevice);
+                using (Client restarted = new Client(port))
+                    Check(restarted.Hello(false) == "OK", "same server object restarts on same port without a password");
                 server.Stop();
             }
             Console.WriteLine("RESULT " + passed + " integration assertions passed");

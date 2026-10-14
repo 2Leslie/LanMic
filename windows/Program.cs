@@ -47,7 +47,6 @@ namespace LanMic
         readonly ReceiverServer server = new ReceiverServer();
         readonly ComboBox addresses = new ComboBox();
         readonly NumericUpDown port = new NumericUpDown();
-        readonly TextBox token = new TextBox();
         readonly Button start = new Button();
         readonly ComboBox outputs = new ComboBox();
         readonly Button refresh = new Button();
@@ -67,15 +66,15 @@ namespace LanMic
         {
             SuspendLayout();
             Text = "LanMic · Wi-Fi 麦克风";
-            ClientSize = new Size(900, 728);
-            MinimumSize = new Size(916, 767);
+            ClientSize = new Size(900, 684);
+            MinimumSize = new Size(916, 723);
             StartPosition = FormStartPosition.CenterScreen;
             Font = new Font("Microsoft YaHei UI", 10F);
             AutoScaleMode = AutoScaleMode.None;
             BackColor = Background; ForeColor = TextColor;
             var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(26, 20, 26, 16), ColumnCount = 1, RowCount = 5 };
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 83));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 192));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 148));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 155));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 202));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -100,13 +99,7 @@ namespace LanMic
             pairing.Controls.Add(port);
             SetupButton(start, "开始监听", 562, 71, 241, 38, true);
             start.Click += delegate { ToggleListening(); }; pairing.Controls.Add(start);
-            pairing.Controls.Add(LabelAt("配对码", 18, 120, 90, 23, 9, MutedColor));
-            token.SetBounds(91, 119, 581, 31); token.ReadOnly = true; token.BorderStyle = BorderStyle.None;
-            token.BackColor = Card; token.ForeColor = Accent; token.Font = new Font("Consolas", 14);
-            token.Text = "先点击“开始监听”"; pairing.Controls.Add(token);
-            var copy = new Button(); SetupButton(copy, "复制", 714, 116, 89, 34, false);
-            copy.Click += delegate { if (running) Clipboard.SetText(server.PairingToken); }; pairing.Controls.Add(copy);
-            pairing.Controls.Add(LabelAt("每次重新监听会生成新配对码。手机验证通过后才开始采音。", 18, 152, 785, 22, 9, MutedColor));
+            pairing.Controls.Add(LabelAt("电脑开始监听后，在手机上填写 IP 和端口，点击「开始传输」。", 18, 114, 785, 22, 9, MutedColor));
             root.Controls.Add(pairing, 0, 1);
 
             var routing = NewCard();
@@ -136,7 +129,7 @@ namespace LanMic
             fault.SetBounds(18, 155, 785, 28); fault.ForeColor = Color.FromArgb(255, 192, 123); fault.Font = new Font(Font.FontFamily, 9);
             monitoring.Controls.Add(fault); root.Controls.Add(monitoring, 0, 3);
 
-            var footer = new Label { Dock = DockStyle.Fill, Text = "Wi-Fi  ·  48 kHz / PCM16 / 单声道  ·  TLS 加密    |    LanMic 0.1.0 开发预览", ForeColor = MutedColor, Font = new Font(Font.FontFamily, 9), TextAlign = ContentAlignment.MiddleLeft };
+            var footer = new Label { Dock = DockStyle.Fill, Text = "Wi-Fi  ·  48 kHz / PCM16 / 单声道  ·  局域网直连    |    LanMic 0.2.0 开发预览", ForeColor = MutedColor, Font = new Font(Font.FontFamily, 9), TextAlign = ContentAlignment.MiddleLeft };
             root.Controls.Add(footer, 0, 4);
             LoadAddresses(); LoadDevices();
             timer.Interval = 100; timer.Tick += delegate { UpdateState(); }; timer.Start(); UpdateState();
@@ -205,7 +198,6 @@ namespace LanMic
                 if (running) { server.Stop(); running = false; }
                 else { server.Start((int)port.Value, ((AudioDevice)outputs.SelectedItem).Id); running = true; }
                 start.Text = running ? "停止监听" : "开始监听";
-                token.Text = running ? server.PairingToken : "先点击“开始监听”";
                 port.Enabled = outputs.Enabled = refresh.Enabled = !running;
                 UpdateState();
             }
@@ -215,7 +207,7 @@ namespace LanMic
         {
             ReceiverSnapshot state = server.Snapshot;
             status.Text = !running ? "尚未开始" : state.ActiveClients == 0 ? "等待手机连接" : state.DeviceName + " · 已连接";
-            details.Text = !running ? "先选择音频去向，再点击开始监听。" : state.ActiveClients == 0 ? "在安卓 App 填写电脑地址、端口与完整配对码，然后开始传输。" :
+            details.Text = !running ? "先选择音频去向，再点击开始监听。" : state.ActiveClients == 0 ? "在安卓 App 填写电脑地址和端口，然后开始传输。" :
                 "收到 " + state.ReceivedFrames + " 帧  ·  输出设备完成 " + state.OutputFrames + " 帧  ·  缓冲 " + (state.QueuedFrames * 20) + " ms  ·  丢弃 " + state.DroppedFrames + " 帧";
             bool recent = state.LastFrameUtc != default(DateTime) && (DateTime.UtcNow - state.LastFrameUtc).TotalSeconds < 1;
             double rms = recent ? state.Rms : 0;

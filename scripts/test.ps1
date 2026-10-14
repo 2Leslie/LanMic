@@ -19,7 +19,7 @@ function Build-Test([string]$Name) {
     if (Test-Path -LiteralPath $config) { Copy-Item -LiteralPath $config -Destination ($target + '.config') -Force }
     return $target
 }
-Write-Host 'Running real TLS receiver integration tests...'
+Write-Host 'Running real password-free TCP v2 receiver integration tests...'
 $receiverTest = Build-Test 'ReceiverIntegrationTests'
 Invoke-Checked $receiverTest @()
 
